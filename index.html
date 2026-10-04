@@ -182,11 +182,15 @@ function preview(size) {
   }
 }
 
-// one item per line: each part's string
-$('list').onclick = () => {
+// two list files, one item per line: each part's string, and each part's x then y
+function saveText(text, name) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([parts.map(p => p.str).join('\n')], { type: 'text/plain' }));
-  a.download = 'image.gemi.list.txt'; a.click();
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = name; a.click();
+}
+$('list').onclick = () => {
+  saveText(parts.map(p => p.str).join('\n'), 'image.gemi.list.txt');
+  setTimeout(() => saveText(parts.map(p => `${p.x}\n${p.y}`).join('\n'), 'image.gemi.xy.txt'), 300);
 };
 $('save').onclick = () => {
   const a = document.createElement('a');
