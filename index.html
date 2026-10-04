@@ -182,10 +182,10 @@ function preview(size) {
   }
 }
 
-// one item per line, 3 items per part: x, y, string
+// one item per line: each part's string
 $('list').onclick = () => {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([parts.map(p => `${p.x}\n${p.y}\n${p.str}`).join('\n')], { type: 'text/plain' }));
+  a.href = URL.createObjectURL(new Blob([parts.map(p => p.str).join('\n')], { type: 'text/plain' }));
   a.download = 'image.gemi.list.txt'; a.click();
 };
 $('save').onclick = () => {
