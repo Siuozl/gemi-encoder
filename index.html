@@ -45,7 +45,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const MAX_ITEMS = 20000;
+const MAX_ITEMS = 200000; // Scratch list item limit
 let img = null, parts = [];
 
 const drop = $('drop');
@@ -138,7 +138,7 @@ function convert() {
     }
     return most;
   };
-  // no part may go over 20,000 list items: add slices along the longer side until each fits
+  // no part may go over 200,000 list items (Scratch stops adding past that): add slices along the longer side until each fits
   while (slice() > MAX_ITEMS && (cols < w || rows < h)) {
     if ((w / cols >= h / rows && cols < w) || rows >= h) cols++; else rows++;
   }
