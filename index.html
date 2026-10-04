@@ -22,6 +22,12 @@
   button.ghost { background:var(--card); color:var(--ink); border:1px solid var(--line); }
   button:disabled { opacity:.5; cursor:default; }
   .stage { background:#fff; border:1px solid var(--line); border-radius:10px; overflow:hidden; aspect-ratio:4/3; }
+  .part { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .part .head { display:flex; align-items:center; gap:10px; font-weight:600; }
+  .part .head span { color:var(--mute); font-weight:500; font-variant-numeric:tabular-nums; }
+  .part .head button { margin-left:auto; padding:6px 14px; }
+  .part textarea { height:60px; }
+  #parts { display:flex; flex-direction:column; gap:10px; }
   canvas { width:100%; height:100%; display:block; image-rendering:pixelated; }
 </style>
 </head>
@@ -31,17 +37,15 @@
   <div id="drop">Drop or choose an image</div>
   <input type="file" id="file" accept="image/*" hidden>
   <div class="size"><input type="number" id="maxW" value="48" min="1" max="480" title="Width"> × <input type="number" id="maxH" value="36" min="1" max="360" title="Height"></div>
-  <textarea id="out" readonly></textarea>
-  <div class="btns">
-    <button id="copy" disabled>Copy</button>
-    <button class="ghost" id="save" disabled>Download</button>
-  </div>
+  <div class="size">Slices <input type="number" id="cols" value="1" min="1" max="20" title="Columns"> × <input type="number" id="rows" value="1" min="1" max="20" title="Rows"></div>
+  <div id="parts"></div>
+  <div class="btns"><button class="ghost" id="save" disabled>Download all</button></div>
   <div class="stage"><canvas id="stage" width="480" height="360"></canvas></div>
 </main>
 
 <script>
 const $ = id => document.getElementById(id);
-let img = null;
+let img = null, parts = [];
 
 const drop = $('drop');
 drop.onclick = () => $('file').click();
@@ -53,8 +57,7 @@ window.addEventListener('paste', e => {
   const f = [...e.clipboardData.items].find(i => i.type.startsWith('image/'));
   if (f) load(f.getAsFile());
 });
-$('maxW').addEventListener('input', convert);
-$('maxH').addEventListener('input', convert);
+for (const id of ['maxW', 'maxH', 'cols', 'rows']) $(id).addEventListener('input', convert);
 
 function load(file) {
   const im = new Image();
@@ -113,18 +116,40 @@ function convert() {
   const data = sample(img, w, h);
 
   const ox = Math.floor(w / 2), oy = Math.floor(h / 2);
-  const parts = [];
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const i = (y * w + x) * 4;
-    if (data[i + 3] === 0) continue;
-    const [hue, sat, bri] = rgbToScratch(data[i], data[i + 1], data[i + 2]);
-    const t = (1 - data[i + 3] / 255) * 100;
-    parts.push(x - ox, oy - y, Math.round(hue), Math.round(sat), Math.round(bri), Math.round(t));
+  const cols = Math.min(Math.max(+$('cols').value || 1, 1), w), rows = Math.min(Math.max(+$('rows').value || 1, 1), h);
+  parts = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const x0 = Math.floor(c * w / cols), x1 = Math.floor((c + 1) * w / cols);
+    const y0 = Math.floor(r * h / rows), y1 = Math.floor((r + 1) * h / rows);
+    const lx = Math.floor((x1 - x0) / 2), ly = Math.floor((y1 - y0) / 2);
+    const vals = [];
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * w + x) * 4;
+      if (data[i + 3] === 0) continue;
+      const [hue, sat, bri] = rgbToScratch(data[i], data[i + 1], data[i + 2]);
+      const t = (1 - data[i + 3] / 255) * 100;
+      vals.push(x - x0 - lx, ly - (y - y0), Math.round(hue), Math.round(sat), Math.round(bri), Math.round(t));
+    }
+    if (vals.length) parts.push({ x: x0 + lx - ox, y: oy - y0 - ly, str: vals.join('/') + '/' });
   }
-  const str = parts.length ? parts.join('/') + '/' : '';
-  $('out').value = str;
-  $('copy').disabled = $('save').disabled = !str;
-  preview(str, Math.max(1, Math.floor(Math.min(480 / w, 360 / h))));
+  showParts();
+  $('save').disabled = !parts.length;
+  preview(Math.max(1, Math.floor(Math.min(480 / w, 360 / h))));
+}
+
+function showParts() {
+  const box = $('parts'); box.replaceChildren();
+  parts.forEach((p, n) => {
+    const el = document.createElement('div'); el.className = 'part';
+    el.innerHTML = `<div class="head">Part ${n + 1}<span>x: ${p.x}</span><span>y: ${p.y}</span><button>Copy</button></div><textarea readonly></textarea>`;
+    el.querySelector('textarea').value = p.str;
+    const btn = el.querySelector('button');
+    btn.onclick = async () => {
+      await navigator.clipboard.writeText(p.str);
+      btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1200);
+    };
+    box.append(el);
+  });
 }
 
 function hsvToRgb(h, s, v) {
@@ -134,23 +159,21 @@ function hsvToRgb(h, s, v) {
   return `${Math.round((r+m)*255)},${Math.round((g+m)*255)},${Math.round((b+m)*255)}`;
 }
 
-function preview(str, size) {
+function preview(size) {
   const ctx = $('stage').getContext('2d');
   ctx.clearRect(0, 0, 480, 360);
-  const v = str.split('/');
-  for (let i = 0; i + 5 < v.length; i += 6) {
-    ctx.fillStyle = `rgba(${hsvToRgb(+v[i+2], +v[i+3], +v[i+4])},${1 - v[i+5] / 100})`;
-    ctx.fillRect(240 + (+v[i] - 0.5) * size, 180 - (+v[i+1] + 0.5) * size, size, size);
+  for (const p of parts) {
+    const v = p.str.split('/');
+    for (let i = 0; i + 5 < v.length; i += 6) {
+      ctx.fillStyle = `rgba(${hsvToRgb(+v[i+2], +v[i+3], +v[i+4])},${1 - v[i+5] / 100})`;
+      ctx.fillRect(240 + (+v[i] + p.x - 0.5) * size, 180 - (+v[i+1] + p.y + 0.5) * size, size, size);
+    }
   }
 }
 
-$('copy').onclick = async () => {
-  await navigator.clipboard.writeText($('out').value);
-  $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy', 1200);
-};
 $('save').onclick = () => {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([$('out').value], { type: 'text/plain' }));
+  a.href = URL.createObjectURL(new Blob([parts.map((p, n) => `Part ${n + 1}  x: ${p.x}  y: ${p.y}\n${p.str}\n`).join('\n')], { type: 'text/plain' }));
   a.download = 'image.gemi.txt'; a.click();
 };
 </script>
