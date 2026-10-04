@@ -39,7 +39,7 @@
   <div class="size"><input type="number" id="maxW" value="48" min="1" max="480" title="Width"> × <input type="number" id="maxH" value="36" min="1" max="360" title="Height"></div>
   <div class="size">Slices <input type="number" id="cols" value="1" min="1" max="20" title="Columns"> × <input type="number" id="rows" value="1" min="1" max="20" title="Rows"></div>
   <div id="parts"></div>
-  <div class="btns"><button class="ghost" id="save" disabled>Download all</button></div>
+  <div class="btns"><button id="list" disabled>Export list</button><button class="ghost" id="save" disabled>Download all</button></div>
   <div class="stage"><canvas id="stage" width="480" height="360"></canvas></div>
 </main>
 
@@ -144,7 +144,7 @@ function convert() {
   }
   $('cols').value = cols; $('rows').value = rows;
   showParts();
-  $('save').disabled = !parts.length;
+  $('save').disabled = $('list').disabled = !parts.length;
   preview(Math.max(1, Math.floor(Math.min(480 / w, 360 / h))));
 }
 
@@ -182,6 +182,12 @@ function preview(size) {
   }
 }
 
+// one item per line, 3 items per part: x, y, string
+$('list').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([parts.map(p => `${p.x}\n${p.y}\n${p.str}`).join('\n')], { type: 'text/plain' }));
+  a.download = 'image.gemi.list.txt'; a.click();
+};
 $('save').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([parts.map((p, n) => `Part ${n + 1}  x: ${p.x}  y: ${p.y}\n${p.str}\n`).join('\n')], { type: 'text/plain' }));
