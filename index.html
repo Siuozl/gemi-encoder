@@ -207,20 +207,23 @@ function encode() {
   play(Math.max(1, Math.floor(Math.min(480 / w, 360 / h))));
 }
 
+// one card per string: frame by frame, part by part (same order as Export list)
 function showParts() {
   const box = $('parts'); box.replaceChildren();
-  parts.forEach((p, n) => {
+  const video = media && media.video, many = parts.length > 1;
+  frames.forEach((_, f) => parts.forEach((p, n) => {
+    const str = p.frames[f];
+    const name = [video && `Frame ${f + 1}`, (many || !video) && `Part ${n + 1}`].filter(Boolean).join(' ');
     const el = document.createElement('div'); el.className = 'part';
-    const label = media && media.video ? `${p.frames.length} frames` : '';
-    el.innerHTML = `<div class="head">Part ${n + 1}<span>x: ${p.x}</span><span>y: ${p.y}</span><span>${label}</span><button>Copy</button></div><textarea readonly></textarea>`;
-    el.querySelector('textarea').value = p.str;
+    el.innerHTML = `<div class="head">${name}<span>x: ${p.x}</span><span>y: ${p.y}</span><button>Copy</button></div><textarea readonly></textarea>`;
+    el.querySelector('textarea').value = str;
     const btn = el.querySelector('button');
     btn.onclick = async () => {
-      await navigator.clipboard.writeText(p.str);
+      await navigator.clipboard.writeText(str);
       btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1200);
     };
     box.append(el);
-  });
+  }));
 }
 
 function hsvToRgb(h, s, v) {
