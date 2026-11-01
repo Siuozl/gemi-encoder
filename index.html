@@ -8,12 +8,13 @@
   :root { --bg:#f4f5f8; --card:#fff; --ink:#1d2030; --mute:#6b7080; --line:#dde0e8; --accent:#ff6680; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14151b; --card:#1e2029; --ink:#e8e9ef; --mute:#9095a6; --line:#2e3140; } }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system, system-ui, sans-serif; }
   main { max-width:560px; margin:0 auto; padding:32px 16px 48px; display:flex; flex-direction:column; gap:14px; }
   h1 { font-size:24px; margin:0; text-align:center; }
   #drop { background:var(--card); border:2px dashed var(--line); border-radius:12px; padding:28px 12px; text-align:center; cursor:pointer; color:var(--mute); }
   #drop.over { border-color:var(--accent); color:var(--accent); }
-  #drop img { max-width:100%; max-height:120px; display:block; margin:0 auto; }
+  #drop img, #drop video { max-width:100%; max-height:120px; display:block; margin:0 auto; }
   .size { display:flex; gap:10px; justify-content:center; align-items:center; color:var(--mute); }
   input[type=number] { width:70px; padding:6px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--ink); text-align:center; }
   textarea { width:100%; height:140px; font:12px/1.4 ui-monospace, Menlo, monospace; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); resize:vertical; word-break:break-all; }
@@ -34,9 +35,10 @@
 <body>
 <main>
   <h1>Gemi Encoder</h1>
-  <div id="drop">Drop or choose an image</div>
-  <input type="file" id="file" accept="image/*" hidden>
+  <div id="drop">Drop or choose an image or video</div>
+  <input type="file" id="file" accept="image/*,video/*" hidden>
   <div class="size"><input type="number" id="maxW" value="48" min="1" max="480" title="Width"> × <input type="number" id="maxH" value="36" min="1" max="360" title="Height"></div>
+  <div class="size" id="fpsRow" hidden>FPS <input type="number" id="fps" value="10" min="1" max="60" title="Frames per second"></div>
   <div class="size">Slices <input type="number" id="cols" value="1" min="1" max="20" title="Columns"> × <input type="number" id="rows" value="1" min="1" max="20" title="Rows"></div>
   <div id="parts"></div>
   <div class="btns"><button id="list" disabled>Export list</button><button class="ghost" id="save" disabled>Download all</button></div>
@@ -46,36 +48,51 @@
 <script>
 const $ = id => document.getElementById(id);
 const MAX_ITEMS = 200000; // Scratch list item limit
-let img = null, parts = [];
+// media: { el, w, h, video } ; frames: one sampled pixel array per frame (one for an image)
+let media = null, frames = [], fw = 0, fh = 0, parts = [], job = 0, timer = 0;
 
 const drop = $('drop');
 drop.onclick = () => $('file').click();
-$('file').onchange = e => e.target.files[0] && load(e.target.files[0]);
+// clear the input so picking the same file again still loads it
+$('file').onchange = e => { e.target.files[0] && load(e.target.files[0]); e.target.value = ''; };
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && load(e.dataTransfer.files[0]); };
 window.addEventListener('paste', e => {
-  const f = [...e.clipboardData.items].find(i => i.type.startsWith('image/'));
+  const f = [...e.clipboardData.items].find(i => i.type.startsWith('image/') || i.type.startsWith('video/'));
   if (f) load(f.getAsFile());
 });
-for (const id of ['maxW', 'maxH', 'cols', 'rows']) $(id).addEventListener('input', convert);
+for (const id of ['maxW', 'maxH', 'fps']) $(id).addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(extract, 300); });
+for (const id of ['cols', 'rows']) $(id).addEventListener('input', encode);
 
 function load(file) {
-  const im = new Image();
-  im.onload = () => { img = im; drop.replaceChildren(im.cloneNode()); convert(); };
-  im.src = URL.createObjectURL(file);
+  job++; frames = []; parts = []; showParts(); stop();
+  const url = URL.createObjectURL(file);
+  if (file.type.startsWith('video/')) {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.onloadeddata = () => {
+      media = { el: v, w: v.videoWidth, h: v.videoHeight, video: true };
+      const thumb = document.createElement('video'); thumb.src = url; thumb.muted = true; thumb.loop = true; thumb.autoplay = true;
+      drop.replaceChildren(thumb); $('fpsRow').hidden = false; extract();
+    };
+    v.src = url;
+  } else {
+    const im = new Image();
+    im.onload = () => { media = { el: im, w: im.width, h: im.height, video: false }; drop.replaceChildren(im.cloneNode()); $('fpsRow').hidden = true; extract(); };
+    im.src = url;
+  }
 }
 
 // shrink in halving steps (proper averaging), then clamp lone outlier pixels to their neighbours' range
-function sample(img, w, h) {
-  let src = img, sw = img.width, sh = img.height;
+function sample(src, sw, sh, w, h) {
   while (sw / 2 >= w && sh / 2 >= h) {
     const s = document.createElement('canvas'); s.width = Math.round(sw / 2); s.height = Math.round(sh / 2);
     const sc = s.getContext('2d'); sc.imageSmoothingQuality = 'high'; sc.drawImage(src, 0, 0, s.width, s.height);
     src = s; sw = s.width; sh = s.height;
   }
   const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
+  const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(src, 0, 0, w, h);
   const d = ctx.getImageData(0, 0, w, h).data, out = new Uint8ClampedArray(d);
@@ -87,7 +104,9 @@ function sample(img, w, h) {
         if (!dx && !dy) continue;
         const xx = x + dx, yy = y + dy;
         if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-        const v = d[(yy * w + xx) * 4 + ch]; if (v < lo) lo = v; if (v > hi) hi = v; n++;
+        const j = (yy * w + xx) * 4;
+        if (ch < 3 && d[j + 3] === 0) continue; // invisible neighbours have no real colour
+        const v = d[j + ch]; if (v < lo) lo = v; if (v > hi) hi = v; n++;
       }
       if (n) out[i + ch] = Math.min(Math.max(d[i + ch], lo), hi);
     }
@@ -108,51 +127,92 @@ function rgbToScratch(r, g, b) {
   return [h / 3.6, max ? d / max * 100 : 0, max * 100];
 }
 
-function convert() {
-  if (!img) return;
+// pixels at transparency 100 draw nothing, so they are left out
+const visible = (data, i) => data[i + 3] >= 2;
+
+// wait for the seek and, where supported, for the frame to actually be decoded
+const seek = (v, t) => new Promise(r => {
+  v.onseeked = () => v.requestVideoFrameCallback ? (v.requestVideoFrameCallback(() => r()), setTimeout(r, 250)) : r();
+  v.currentTime = t;
+});
+
+async function extract() {
+  if (!media) return;
+  const id = ++job;
   const maxW = +$('maxW').value || 1, maxH = +$('maxH').value || 1;
-  const scale = Math.min(1, maxW / img.width, maxH / img.height);
-  const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+  const scale = Math.min(1, maxW / media.w, maxH / media.h);
+  const w = Math.max(1, Math.round(media.w * scale)), h = Math.max(1, Math.round(media.h * scale));
+  const out = [];
+  if (media.video) {
+    const v = media.el, fps = Math.min(Math.max(+$('fps').value || 1, 1), 60);
+    const count = Math.max(1, Math.floor(v.duration * fps));
+    const grab = document.createElement('canvas'); grab.width = media.w; grab.height = media.h;
+    const gc = grab.getContext('2d');
+    for (let n = 0; n < count; n++) {
+      await seek(v, Math.min(Math.max(n / fps, 0.001), v.duration - 0.001));
+      if (id !== job) return;
+      gc.clearRect(0, 0, media.w, media.h); gc.drawImage(v, 0, 0);
+      out.push(sample(grab, media.w, media.h, w, h));
+      $('list').textContent = `${n + 1} / ${count}`;
+    }
+    $('list').textContent = 'Export list';
+  } else out.push(sample(media.el, media.w, media.h, w, h));
+  frames = out; fw = w; fh = h;
+  encode();
+}
 
-  const data = sample(img, w, h);
+// list items per part for a cols x rows grid, worst frame
+function mostItems(cols, rows) {
+  let most = 0;
+  for (const data of frames) for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const x0 = Math.floor(c * fw / cols), x1 = Math.floor((c + 1) * fw / cols);
+    const y0 = Math.floor(r * fh / rows), y1 = Math.floor((r + 1) * fh / rows);
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (visible(data, (y * fw + x) * 4)) n++;
+    most = Math.max(most, n * 6);
+  }
+  return most;
+}
 
-  const ox = Math.floor(w / 2), oy = Math.floor(h / 2);
+function encode() {
+  if (!frames.length) return;
+  const w = fw, h = fh, ox = Math.floor(w / 2), oy = Math.floor(h / 2);
   let cols = Math.min(Math.max(+$('cols').value || 1, 1), w), rows = Math.min(Math.max(+$('rows').value || 1, 1), h);
-  const slice = () => {
-    parts = [];
-    let most = 0;
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const x0 = Math.floor(c * w / cols), x1 = Math.floor((c + 1) * w / cols);
-      const y0 = Math.floor(r * h / rows), y1 = Math.floor((r + 1) * h / rows);
-      const lx = Math.floor((x1 - x0) / 2), ly = Math.floor((y1 - y0) / 2);
+  // no part may go over 200,000 list items (Scratch stops adding past that): add slices along the longer side until each fits
+  while (mostItems(cols, rows) > MAX_ITEMS && (cols < w || rows < h)) {
+    if ((w / cols >= h / rows && cols < w) || rows >= h) cols++; else rows++;
+  }
+  $('cols').value = cols; $('rows').value = rows;
+  // every frame uses the same parts, so a video keeps empty parts to stay in step
+  parts = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const x0 = Math.floor(c * w / cols), x1 = Math.floor((c + 1) * w / cols);
+    const y0 = Math.floor(r * h / rows), y1 = Math.floor((r + 1) * h / rows);
+    const lx = Math.floor((x1 - x0) / 2), ly = Math.floor((y1 - y0) / 2);
+    const strs = frames.map(data => {
       const vals = [];
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
         const i = (y * w + x) * 4;
-        if (data[i + 3] === 0) continue;
+        if (!visible(data, i)) continue;
         const [hue, sat, bri] = rgbToScratch(data[i], data[i + 1], data[i + 2]);
         const t = (1 - data[i + 3] / 255) * 100;
         vals.push(x - x0 - lx, ly - (y - y0), Math.round(hue), Math.round(sat), Math.round(bri), Math.round(t));
       }
-      most = Math.max(most, vals.length);
-      if (vals.length) parts.push({ x: x0 + lx - ox, y: oy - y0 - ly, str: vals.join('/') + '/' });
-    }
-    return most;
-  };
-  // no part may go over 200,000 list items (Scratch stops adding past that): add slices along the longer side until each fits
-  while (slice() > MAX_ITEMS && (cols < w || rows < h)) {
-    if ((w / cols >= h / rows && cols < w) || rows >= h) cols++; else rows++;
+      return vals.length ? vals.join('/') + '/' : '';
+    });
+    if (media.video || strs[0]) parts.push({ x: x0 + lx - ox, y: oy - y0 - ly, str: strs[0], frames: strs });
   }
-  $('cols').value = cols; $('rows').value = rows;
   showParts();
   $('save').disabled = $('list').disabled = !parts.length;
-  preview(Math.max(1, Math.floor(Math.min(480 / w, 360 / h))));
+  play(Math.max(1, Math.floor(Math.min(480 / w, 360 / h))));
 }
 
 function showParts() {
   const box = $('parts'); box.replaceChildren();
   parts.forEach((p, n) => {
     const el = document.createElement('div'); el.className = 'part';
-    el.innerHTML = `<div class="head">Part ${n + 1}<span>x: ${p.x}</span><span>y: ${p.y}</span><button>Copy</button></div><textarea readonly></textarea>`;
+    const label = media && media.video ? `${p.frames.length} frames` : '';
+    el.innerHTML = `<div class="head">Part ${n + 1}<span>x: ${p.x}</span><span>y: ${p.y}</span><span>${label}</span><button>Copy</button></div><textarea readonly></textarea>`;
     el.querySelector('textarea').value = p.str;
     const btn = el.querySelector('button');
     btn.onclick = async () => {
@@ -170,11 +230,11 @@ function hsvToRgb(h, s, v) {
   return `${Math.round((r+m)*255)},${Math.round((g+m)*255)},${Math.round((b+m)*255)}`;
 }
 
-function preview(size) {
+function preview(size, f) {
   const ctx = $('stage').getContext('2d');
   ctx.clearRect(0, 0, 480, 360);
   for (const p of parts) {
-    const v = p.str.split('/');
+    const v = p.frames[f].split('/');
     for (let i = 0; i + 5 < v.length; i += 6) {
       ctx.fillStyle = `rgba(${hsvToRgb(+v[i+2], +v[i+3], +v[i+4])},${1 - v[i+5] / 100})`;
       ctx.fillRect(240 + (+v[i] + p.x - 0.5) * size, 180 - (+v[i+1] + p.y + 0.5) * size, size, size);
@@ -182,20 +242,29 @@ function preview(size) {
   }
 }
 
-// two list files, one item per line: each part's string, and each part's x then y
+let loop = 0;
+function stop() { clearInterval(loop); $('stage').getContext('2d').clearRect(0, 0, 480, 360); }
+function play(size) {
+  clearInterval(loop);
+  let f = 0; preview(size, 0);
+  if (frames.length > 1) loop = setInterval(() => { f = (f + 1) % frames.length; preview(size, f); }, 1000 / (+$('fps').value || 10));
+}
+
+// two list files, one item per line: every string (frame by frame, part by part), and each part's x then y
 function saveText(text, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
   a.download = name; a.click();
 }
+const allStrings = () => frames.flatMap((_, f) => parts.map(p => p.frames[f]));
 $('list').onclick = () => {
-  saveText(parts.map(p => p.str).join('\n'), 'image.gemi.list.txt');
+  saveText(allStrings().join('\n'), 'image.gemi.list.txt');
   setTimeout(() => saveText(parts.map(p => `${p.x}\n${p.y}`).join('\n'), 'image.gemi.xy.txt'), 300);
 };
 $('save').onclick = () => {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([parts.map((p, n) => `Part ${n + 1}  x: ${p.x}  y: ${p.y}\n${p.str}\n`).join('\n')], { type: 'text/plain' }));
-  a.download = 'image.gemi.txt'; a.click();
+  const video = media.video;
+  saveText(frames.flatMap((_, f) => parts.map((p, n) =>
+    `${video ? `Frame ${f + 1}  ` : ''}Part ${n + 1}  x: ${p.x}  y: ${p.y}\n${p.frames[f]}\n`)).join('\n'), 'image.gemi.txt');
 };
 </script>
 </body>
